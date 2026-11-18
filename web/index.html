@@ -17,6 +17,7 @@
   </div>
   <nav class="tabs" role="tablist" aria-label="视图">
     <button role="tab" data-view="tour" aria-selected="true">导览</button>
+    <button role="tab" data-view="dynamic">动态图集</button>
     <button role="tab" data-view="field">距离场</button>
     <button role="tab" data-view="editor">字形编辑</button>
     <button role="tab" data-view="audit">误差与图集</button>
@@ -41,6 +42,59 @@
       <label>字距 <input type="range" id="tracking" min="-40" max="120" value="0" /><output id="tracking-out">0 /1000 em</output></label>
       <label class="inline"><input type="checkbox" id="guides" /> 显示基线 / 图块边框</label>
       <label class="inline"><input type="checkbox" id="debugfield" /> 显示距离场灰度</label>
+    </div>
+    <div class="dynamic-tour">
+      <div class="dynamic-tour-head">
+        <h2>运行中文字 · 有界图集缓存</h2>
+        <p class="note small">固定图集未覆盖的字符在此异步生成、上传并按代次回收；缺字显示明确占位符，绝不复用上一个槽位字符。</p>
+      </div>
+      <div class="dynamic-tour-controls">
+        <label>快速语言
+          <select id="dyn-language">
+            <option value="">（自定义）</option>
+          </select>
+        </label>
+        <label class="grow">动态文案 <input type="text" id="dyn-text" value="" placeholder="输入固定图集之外的文字，例如 Русский、繁體、日本語、한국어" /></label>
+        <button id="dyn-apply" class="ghost">应用并生成</button>
+        <button id="dyn-clear" class="ghost">清空场景</button>
+      </div>
+      <p class="note small" id="dyn-caption">动态文字绘制在上方导览 GPU 画布底部；状态会同步到「动态图集」页：待生成 / 已上传 / 可绘制。</p>
+    </div>
+  </section>
+
+  <section class="view" id="view-dynamic" data-view="dynamic" hidden>
+    <div class="dyn-grid">
+      <div class="dyn-main">
+        <h2>有界图集槽位（R8 纹理实况）</h2>
+        <div class="dyn-atlas-wrap">
+          <canvas id="dyn-atlas-canvas" aria-label="动态图集纹理内容"></canvas>
+        </div>
+        <div class="dyn-legend">
+          <span><i class="sw sw-free"></i>空闲</span>
+          <span><i class="sw sw-pending"></i>待生成（占位）</span>
+          <span><i class="sw sw-resident"></i>已上传可绘制</span>
+          <span><i class="sw sw-missing"></i>缺字占位</span>
+          <span><i class="sw sw-parked"></i>等待 GPU 完成</span>
+        </div>
+      </div>
+      <aside class="dyn-side">
+        <h2>缓存生命周期</h2>
+        <dl class="facts" id="dyn-facts"></dl>
+        <h3>状态机</h3>
+        <ul class="dyn-state-list" id="dyn-state-list"></ul>
+        <h3>显存范围</h3>
+        <p class="note small mono" id="dyn-vram"></p>
+        <div class="row">
+          <button id="dyn-recycle" class="ghost">回收一个空闲字形</button>
+          <button id="dyn-destroy" class="ghost danger">销毁场景</button>
+        </div>
+        <button id="dyn-rebuild" class="ghost" hidden>重建场景</button>
+        <div class="errors" id="dyn-errors" role="alert" hidden></div>
+        <p class="note small">
+          回收在 GL fence 确认 GPU 不再采样该槽位后才清理并归还；图集容量固定，
+          不会用无限扩图回避生命周期。
+        </p>
+      </aside>
     </div>
   </section>
 
@@ -88,6 +142,12 @@
       <aside class="editor-side">
         <h2>字形图集内核</h2>
         <p class="note small">编辑由内核驱动：每次改动都会重算该字的距离场，并把结果回写到图集与结果区。失败会直接显示在这里。</p>
+        <label>图集来源
+          <select id="atlas-source">
+            <option value="fixed" selected>固定图集（构建产物）</option>
+            <option value="dynamic">动态图集（运行时有界缓存）</option>
+          </select>
+        </label>
         <label>字形
           <select id="glyph-select"></select>
         </label>

@@ -115,3 +115,114 @@ test('audit view reports atlas size and per-size error from metrics.json', async
   const rows = await page.evaluate(() => document.querySelectorAll('#audit-body table').length);
   expect(rows).toBeGreaterThanOrEqual(2);
 });
+
+// ---- dynamic bounded atlas -------------------------------------------------
+
+test('dynamic tour generates glyphs into the bounded cache and exposes drawable state', async ({ page }) => {
+  const errors = await boot(page);
+  // Cyrillic is outside the fixed atlases; applying it drives runtime generation.
+  await page.fill('#dyn-text', 'Горный павильон');
+  await page.click('#dyn-apply');
+  // Wait until at least one resident (drawable) slot appears in the live cache.
+  await page.waitForFunction(() => {
+    const s = window.__pavilionDynamic?.snapshot;
+    return s && s.slots.some((q) => q.state === 'resident');
+  }, { timeout: 15_000 });
+  const snap = await page.evaluate(() => window.__pavilionDynamic.snapshot);
+  expect(snap.used).toBeGreaterThan(0);
+  expect(snap.used).toBeLessThanOrEqual(snap.capacity);
+  // The bounded texture has a fixed, non-growing VRAM footprint.
+  const vram = await page.evaluate(() => window.__pavilionDynamic.vramBytes);
+  expect(vram).toBeGreaterThan(0);
+  const [w, h] = await page.evaluate(() => window.__pavilionDynamic.textureSize);
+  expect(vram).toBe(w * h);
+  expect(errors).toEqual([]);
+});
+
+test('dynamic view reports lifecycle states, fixed VRAM range and capacity counters', async ({ page }) => {
+  await boot(page);
+  await page.fill('#dyn-text', 'Русский 日本語');
+  await page.click('#dyn-apply');
+  await page.waitForFunction(() => {
+    const s = window.__pavilionDynamic?.snapshot;
+    return s && s.stats.uploaded > 0;
+  }, { timeout: 15_000 });
+  await page.click('button[data-view="dynamic"]');
+  await expect(page.locator('#view-dynamic')).toBeVisible();
+  const facts = await page.locator('#dyn-facts').innerText();
+  expect(facts).toContain('容量（槽位）');
+  expect(facts).toContain('已上传 · 可绘制');
+  const vramText = await page.locator('#dyn-vram').innerText();
+  expect(vramText).toContain('R8');
+  // Every drawn cell stays inside the committed texture rectangle.
+  const inRange = await page.evaluate(() => {
+    const { glAtlas, cache } = window.__pavilion.state.dynamic;
+    return cache.snapshot().slots.every((q) => {
+      const r = glAtlas.cellRect(q.index);
+      return r.x >= 0 && r.y >= 0 && r.x + r.w <= glAtlas.width && r.y + r.h <= glAtlas.height;
+    });
+  });
+  expect(inRange).toBe(true);
+});
+
+test('unsupported Korean codepoints produce explicit placeholders, never stale pixels', async ({ page }) => {
+  await boot(page);
+  await page.fill('#dyn-text', '한국어');
+  await page.click('#dyn-apply');
+  await page.waitForFunction(() => {
+    const s = window.__pavilionDynamic?.snapshot;
+    return s && s.slots.some((q) => q.state === 'missing');
+  }, { timeout: 15_000 });
+  const hasMissing = await page.evaluate(() =>
+    window.__pavilionDynamic.snapshot.slots.some((q) => q.state === 'missing' && q.placeholder));
+  expect(hasMissing).toBe(true);
+});
+
+test('dynamic scene destroy stops requests and rebuild restores a fresh bounded cache', async ({ page }) => {
+  await boot(page);
+  await page.fill('#dyn-text', 'Русский');
+  await page.click('#dyn-apply');
+  await page.waitForFunction(() => window.__pavilionDynamic?.snapshot?.used > 0, { timeout: 15_000 });
+  await page.click('button[data-view="dynamic"]');
+  await page.click('#dyn-destroy');
+  await expect(page.locator('#dyn-rebuild')).toBeVisible();
+  const destroyed = await page.evaluate(() => window.__pavilion.state.dynamicDestroyed);
+  expect(destroyed).toBe(true);
+  // Rebuild brings back a working cache that accepts requests again.
+  await page.click('#dyn-rebuild');
+  await expect(page.locator('#dyn-rebuild')).toBeHidden();
+  await page.fill('#dyn-text', 'Японский');
+  await page.click('#dyn-apply');
+  await page.waitForFunction(() => {
+    const s = window.__pavilionDynamic?.snapshot;
+    return s && s.slots.some((q) => q.state === 'resident');
+  }, { timeout: 15_000 });
+});
+
+test('editor dynamic source edits a resident glyph and writes back into its slot', async ({ page }) => {
+  const errors = await boot(page);
+  // Generate a resident dynamic glyph first.
+  await page.fill('#dyn-text', 'Горный');
+  await page.click('#dyn-apply');
+  await page.waitForFunction(() => {
+    const s = window.__pavilionDynamic?.snapshot;
+    return s && s.slots.some((q) => q.state === 'resident');
+  }, { timeout: 15_000 });
+  await page.click('button[data-view="editor"]');
+  await page.selectOption('#atlas-source', 'dynamic');
+  // The glyph select now lists resident dynamic slots.
+  const options = await page.locator('#glyph-select option').count();
+  expect(options).toBeGreaterThan(0);
+  await page.evaluate(() => {
+    const el = document.getElementById('stroke');
+    el.value = '0.03';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await page.waitForTimeout(500);
+  await page.click('#commit-glyph');
+  await expect(page.locator('#toast')).toContainText('已提交');
+  const facts = await page.locator('#editor-facts').innerText();
+  expect(facts).toContain('动态槽位');
+  expect(facts).toContain('字边宽度（实测）');
+  expect(errors).toEqual([]);
+});

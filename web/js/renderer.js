@@ -62,12 +62,18 @@ export class SdfTextRenderer {
     this.textProg = program(gl, TEXT_VERT, TEXT_FRAG);
     this.inspectProg = program(gl, INSPECT_VERT, INSPECT_FRAG);
     this.atlas = new Map();
+    // Bounded runtime texture for glyphs missing from the fixed atlases.
+    // Registered via registerDynamicAtlas(); batches tagged atlas:'dynamic'
+    // sample it, and every draw is re-validated against the slot epoch first.
+    this.dynamicAtlas = null;
+    this.dynamicCache = null;
     this.batches = null;
     this.edgeWidthPx = 1.0;
     this.dpr = 1;
     this.cssWidth = canvas.clientWidth || canvas.width;
     this.cssHeight = canvas.clientHeight || canvas.height;
     this.instCount = 0;
+    this.droppedStale = 0;
 
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
@@ -155,11 +161,22 @@ export class SdfTextRenderer {
 
   hasAtlas(faceId) { return this.atlas.has(faceId); }
 
+  // Register the bounded runtime texture. `cache` is the DynamicGlyphCache the
+  // shaper resolves identities through; flush() re-validates each dynamic
+  // placement's epoch against it so recycled coordinates are never drawn.
+  registerDynamicAtlas({ texture, width, height, cache, glAtlas }) {
+    this.dynamicAtlas = { tex: texture, width, height };
+    this.dynamicCache = cache;
+    this.dynamicGlAtlas = glAtlas;
+  }
+
   begin(debug = 0) {
     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
     this.batches = [];
+    this.dynamicBatches = [];
     this.debug = debug;
     this.instCount = 0;
+    this.droppedStale = 0;
   }
 
   // placements: [{x,y,w,h,u0,v0,du,dv, sizePx}], colour [r,g,b,a] in sRGB.
@@ -184,6 +201,31 @@ export class SdfTextRenderer {
     b.count = b.floats.length / FLOATS_PER_INSTANCE;
   }
 
+  // Dynamic placements carry their own decode settings (the runtime cache uses
+  // the dynamic provider's settings, not a face manifest). Entries whose slot
+  // epoch no longer matches the cache are dropped here, not drawn.
+  pushDynamic(placements, color, settings) {
+    if (!placements.length || !this.dynamicCache) return;
+    const floats = [];
+    for (const p of placements) {
+      if (p.atlas === 'dynamic') {
+        const slot = this.dynamicCache.slots.get(p.slotIndex);
+        if (!slot || slot.epoch !== p.epoch) {
+          this.droppedStale++;
+          continue;
+        }
+      }
+      floats.push(
+        p.x, p.y, p.w, p.h,
+        p.u0, p.v0, p.du, p.dv,
+        color[0], color[1], color[2], color[3],
+        this.cssWidth, this.cssHeight,
+        settings.rangeTexels, settings.texelsPerEm, p.sizePx,
+      );
+    }
+    if (floats.length) this.dynamicBatches.push({ floats, count: floats.length / FLOATS_PER_INSTANCE });
+  }
+
   // Stroke-only glyph outlines (vector reference), drawn as thin lines.
   // Used by the editor to show the original contour next to the field.
   flush() {
@@ -199,18 +241,69 @@ export class SdfTextRenderer {
     for (const b of this.batches) {
       const tex = this.atlas.get(b.face);
       if (!tex) continue;
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, tex.tex);
-      gl.uniform1i(this.uniforms.atlas, 0);
-      gl.uniform2f(this.uniforms.atlasSize, tex.width, tex.height);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
-      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(b.floats), gl.DYNAMIC_DRAW);
-      gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, b.count);
+      this._drawBatch(tex.tex, tex.width, tex.height, b.floats, b.count);
+      this.instCount += b.count;
+    }
+    for (const b of this.dynamicBatches) {
+      if (!this.dynamicAtlas) continue;
+      this._drawBatch(
+        this.dynamicAtlas.tex, this.dynamicAtlas.width, this.dynamicAtlas.height,
+        b.floats, b.count,
+      );
       this.instCount += b.count;
     }
     gl.bindVertexArray(null);
     this.batches = null;
+    this.dynamicBatches = null;
+    // Insert a completion fence after the frame's draws. Eviction paths wait on
+    // this boundary before reusing a slot, so a recycled cell cannot be
+    // overwritten while the GPU is still sampling it.
+    this._frameFence = this.insertFence();
     return this.instCount;
+  }
+
+  _drawBatch(tex, width, height, floats, count) {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(this.uniforms.atlas, 0);
+    gl.uniform2f(this.uniforms.atlasSize, width, height);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(floats), gl.DYNAMIC_DRAW);
+    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, count);
+  }
+
+  insertFence() {
+    const gl = this.gl;
+    if (typeof gl.fenceSync !== 'function') return null;
+    gl.flush();
+    return gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+  }
+
+  // GPU completion boundary for teardown and tests. Waiting here is what makes
+  // texture deletion a real release rather than just dropping a JS reference.
+  async waitGpuDone(timeoutNs = 2_000_000_000) {
+    const gl = this.gl;
+    if (this._frameFence && typeof gl.clientWaitSync === 'function') {
+      gl.clientWaitSync(this._frameFence, gl.SYNC_FLUSH_COMMANDS_BIT, timeoutNs);
+      gl.deleteSync(this._frameFence);
+      this._frameFence = null;
+    } else {
+      gl.finish?.();
+    }
+  }
+
+  // True release path: wait for in-flight draws, then delete every texture and
+  // sync. Called on scene destruction; the JS objects becoming unreachable on
+  // their own would not reclaim the committed VRAM.
+  async dispose() {
+    await this.waitGpuDone();
+    const gl = this.gl;
+    for (const entry of this.atlas.values()) gl.deleteTexture(entry.tex);
+    this.atlas.clear();
+    if (this.dynamicGlAtlas) this.dynamicGlAtlas.destroy();
+    this.dynamicAtlas = null;
+    this.dynamicCache = null;
   }
 }
 

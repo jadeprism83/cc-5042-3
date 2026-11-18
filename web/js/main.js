@@ -7,6 +7,8 @@ import { buildTourScene, groupBatches } from './tour.js';
 import { initField } from './field.js';
 import { initEditor } from './editor.js';
 import { initAudit } from './audit.js';
+import { initDynamicView } from './dynamic-view.js';
+import { createDynamicSystem, DYNAMIC_GRID } from './dynamic-system.js';
 
 const $ = (sel) => document.querySelector(sel);
 const state = {
@@ -22,6 +24,9 @@ const state = {
   debugField: false,
   pixels: new Map(),
   bootError: null,
+  dynamic: null,
+  dynamicText: '',
+  dynamicDestroyed: false,
 };
 
 function setStatus(kind, text) {
@@ -66,6 +71,8 @@ async function boot() {
     state.renderer = new SdfTextRenderer(canvas);
     for (const [faceId, p] of pixels) state.renderer.uploadAtlas(faceId, p.width, p.height, p.data);
 
+    await bootDynamic();
+
     const sources = [...pixels.values()].map((p) => p.source);
     const unique = [...new Set(sources)];
     const totalR8 = index.faces.reduce((s, f) => s + f.atlas.pixels, 0);
@@ -75,6 +82,7 @@ async function boot() {
     initTour();
     initField({ state, toast, showError });
     initEditor({ state, toast, showError });
+    initDynamicView({ state, toast, showError });
     await initAudit({ state, showError });
     bindTabs();
     window.__pavilion = { state, toast, showError };
@@ -86,6 +94,172 @@ async function boot() {
   }
 }
 
+async function bootDynamic() {
+  const sys = await createDynamicSystem(state.renderer.gl, { grid: DYNAMIC_GRID });
+  sys.attachManifests(state.manifests);
+  state.renderer.registerDynamicAtlas({
+    texture: sys.texture, width: sys.glAtlas.width, height: sys.glAtlas.height,
+    cache: sys.cache, glAtlas: sys.glAtlas,
+  });
+  state.dynamic = sys;
+  state.rebuildDynamic = rebuildDynamic;
+  populateLanguages(sys);
+  bindDynamicTour();
+}
+
+async function rebuildDynamic() {
+  state.dynamicDestroyed = false;
+  await bootDynamic();
+  state.renderer.registerDynamicAtlas({
+    texture: state.dynamic.texture,
+    width: state.dynamic.glAtlas.width, height: state.dynamic.glAtlas.height,
+    cache: state.dynamic.cache, glAtlas: state.dynamic.glAtlas,
+  });
+  drawDynamicTour();
+  if (state.view === 'dynamic') state.dynamicView.redraw();
+}
+
+function populateLanguages(sys) {
+  const sel = $('#dyn-language');
+  const presets = sys.provider.presets || {};
+  sel.innerHTML = '<option value="">（自定义）</option>' +
+    Object.entries(presets).map(([id, p]) => `<option value="${id}">${p.label}</option>`).join('');
+}
+
+function bindDynamicTour() {
+  const textEl = $('#dyn-text');
+  const langEl = $('#dyn-language');
+  const apply = () => {
+    if (state.dynamicDestroyed || !state.dynamic) {
+      showError(Object.assign(new Error('动态场景已销毁，请先重建场景'), { code: 'CACHE_DESTROYED' }));
+      return;
+    }
+    state.dynamicText = textEl.value;
+    drawDynamicTour();
+  };
+  $('#dyn-apply').addEventListener('click', apply);
+  textEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') apply(); });
+  $('#dyn-clear').addEventListener('click', () => {
+    state.dynamicText = '';
+    textEl.value = '';
+    drawDynamicTour();
+  });
+  langEl.addEventListener('change', () => {
+    const id = langEl.value;
+    const preset = id ? state.dynamic?.provider.presets[id] : null;
+    if (preset) {
+      textEl.value = preset.samples.join('　');
+      apply();
+    }
+  });
+}
+
+// Shape the current dynamic text and draw it on the shared tour GL canvas in a
+// reserved bottom band. Pending glyphs render as placeholders on the first
+// pass; when generator tasks resolve we redraw, so the transition
+// pending -> uploaded is visible without any user action.
+async function drawDynamicTour() {
+  const sys = state.dynamic;
+  if (!sys || state.dynamicDestroyed) return;
+  // Build the fixed tour frame first (it owns begin/clear), then append the
+  // dynamic band before the single shared flush.
+  const frame = drawTourFrame();
+  if (!frame) return;
+  const { rect } = frame;
+  sys.pump();
+
+  const text = state.dynamicText;
+  let dynamicCount = 0;
+  let placeholderCount = 0;
+  if (text) {
+    const bandTop = rect.height - 150;
+    const lines = wrapDynamic(sys, text, rect.width - 48, 26);
+    let y = bandTop + 34;
+    for (const line of lines.slice(0, 3)) {
+      const { placements } = sys.shaper.shapeLine(line, { sizePx: 26, x: 24, y });
+      const fixed = placements.filter((p) => p.atlas === 'fixed');
+      const dyn = placements.filter((p) => p.atlas !== 'fixed');
+      for (const p of placements) if (p.placeholder) placeholderCount++;
+      if (fixed.length) {
+        const byFace = new Map();
+        for (const p of fixed) {
+          if (!byFace.has(p.faceId)) byFace.set(p.faceId, []);
+          byFace.get(p.faceId).push(p);
+        }
+        for (const [faceId, items] of byFace) {
+          state.renderer.push(state.manifests.byId.get(faceId), items, hexToRgba('#efe7d7'));
+        }
+      }
+      if (dyn.length) {
+        state.renderer.pushDynamic(dyn, hexToRgba('#d9a05b'), sys.provider.settings);
+        dynamicCount += dyn.length;
+      }
+      y += 26 * 1.5;
+    }
+  }
+  const count = state.renderer.flush();
+  sys.shaper.endFrame();
+  drawOverlay(rect, frame.scene, count);
+  state.lastTour = { scene: frame.scene, batches: frame.batches, count, rect };
+  window.__pavilionStats = { instances: count, faces: frame.batches.length };
+  $('#dyn-caption').textContent =
+    `动态实例 ${dynamicCount} · 占位/缺字 ${placeholderCount} · 布局代次 ${sys.cache.layoutEpoch}`;
+  window.__pavilionDynamic = {
+    dynamicCount, placeholderCount,
+    snapshot: sys.cache.snapshot(),
+    vramBytes: sys.glAtlas.vramBytes(),
+    textureSize: [sys.glAtlas.width, sys.glAtlas.height],
+    droppedStale: state.renderer.droppedStale,
+  };
+
+  // Redraw once pending generation settles, then refresh both surfaces.
+  if (sys.cache.tasks.size) {
+    await sys.cache.settled();
+    if (state.dynamic === sys && !state.dynamicDestroyed) {
+      drawDynamicTour();
+      if (state.view === 'dynamic') state.dynamicView.redraw();
+    }
+  } else if (state.view === 'dynamic') {
+    state.dynamicView.redraw();
+  }
+}
+
+// Simple width-based wrapping using advances from both fixed and dynamic
+// resolutions. CJK breaks per character; Latin breaks at spaces.
+function wrapDynamic(sys, text, maxWidthPx, sizePx) {
+  const lines = [];
+  let cur = '';
+  const widthOf = (s) => sys.shaper.shapeLine(s, { sizePx }).advancePx;
+  const tokens = tokenizeForWrap(text);
+  for (const tok of tokens) {
+    if (tok === '\n') { lines.push(cur); cur = ''; continue; }
+    const candidate = cur + tok;
+    if (widthOf(candidate) > maxWidthPx && cur) {
+      lines.push(cur);
+      cur = /^\s+$/.test(tok) ? '' : tok;
+    } else {
+      cur = candidate;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines;
+}
+
+function tokenizeForWrap(text) {
+  const out = [];
+  let buf = '';
+  for (const ch of text) {
+    if (ch === '\n') { if (buf) { out.push(buf); buf = ''; } out.push('\n'); continue; }
+    if (/\s/.test(ch)) { if (buf) { out.push(buf); buf = ''; } out.push(ch); continue; }
+    const cp = ch.codePointAt(0);
+    const cjk = (cp >= 0x2e80 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x30ff) || (cp >= 0xac00 && cp <= 0xd7af) || (cp >= 0xff00 && cp <= 0xffef);
+    if (cjk) { if (buf) { out.push(buf); buf = ''; } out.push(ch); }
+    else buf += ch;
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
 function bindTabs() {
   const tabs = [...document.querySelectorAll('.tabs button')];
   const views = [...document.querySelectorAll('.view')];
@@ -94,8 +268,9 @@ function bindTabs() {
     for (const t of tabs) t.setAttribute('aria-selected', String(t.dataset.view === view));
     for (const v of views) v.hidden = v.dataset.view !== view;
     if (view === 'tour') drawTour();
+    if (view === 'dynamic') state.dynamicView?.redraw();
     if (view === 'field') state.field?.redraw();
-    if (view === 'editor') state.editor?.redraw();
+    if (view === 'editor') { state.editor?.refresh?.(); state.editor?.redraw(); }
   };
   for (const t of tabs) t.addEventListener('click', () => show(t.dataset.view));
   state.showView = show;
@@ -133,9 +308,34 @@ function initTour() {
 
 function drawTour() {
   if (!state.renderer || state.view !== 'tour') return;
+  // When dynamic text is active, drawDynamicTour owns the whole frame: it builds
+  // the fixed batches itself, appends the dynamic band and does the single flush.
+  // Otherwise this is a fixed-only frame.
+  if (state.dynamicText && state.dynamic && !state.dynamicDestroyed) {
+    drawDynamicTour();
+    return;
+  }
+  const frame = drawTourFrame();
+  if (!frame) return;
+  const { rect, scene, batches } = frame;
+  const count = state.renderer.flush();
+
+  // Vector rules and guides are drawn with the 2D context of a sibling canvas
+  // so they never touch the glyph pipeline. Simplest: draw on the same canvas
+  // is impossible for WebGL; we render rules as thin SDF-free DOM lines instead.
+  drawOverlay(rect, scene, count);
+  state.lastTour = { scene, batches, count, rect };
+  window.__pavilionStats = { instances: count, faces: batches.length };
+}
+
+// Builds the fixed-tour GL frame: resize, clear and push all fixed-atlas
+// batches, but does not flush. The dynamic band appends its own batches before
+// the shared flush when present.
+function drawTourFrame() {
+  if (!state.renderer) return null;
   const canvas = $('#tour-canvas');
   const rect = canvas.getBoundingClientRect();
-  if (rect.width < 10 || rect.height < 10) return;
+  if (rect.width < 10 || rect.height < 10) return null;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   state.renderer.resize({ widthPx: rect.width, heightPx: rect.height, dpr });
   state.renderer.edgeWidthPx = 1.0 * dpr;
@@ -156,14 +356,7 @@ function drawTour() {
   for (const b of batches) {
     state.renderer.push(b.manifest, b.items, b.color);
   }
-  const count = state.renderer.flush();
-
-  // Vector rules and guides are drawn with the 2D context of a sibling canvas
-  // so they never touch the glyph pipeline. Simplest: draw on the same canvas
-  // is impossible for WebGL; we render rules as thin SDF-free DOM lines instead.
-  drawOverlay(rect, scene, count);
-  state.lastTour = { scene, batches, count, rect };
-  window.__pavilionStats = { instances: count, faces: batches.length };
+  return { rect, scene, batches };
 }
 
 // Rules and guides as an absolutely-positioned SVG overlay, so the WebGL pass

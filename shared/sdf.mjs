@@ -159,6 +159,72 @@ export function coverageFromPixels(dPx, edgeWidthPx = 1) {
   return Math.max(0, Math.min(1, dPx / edgeWidthPx + 0.5));
 }
 
+// Measured edge quality of a built distance tile. Both numbers come from the
+// actual encoded field rather than a heuristic estimate:
+//   - edgeWidthPx: width of the 10%..90% coverage transition, expressed in
+//     screen pixels at the given render size (shader-identical decode);
+//   - clarity: 0..1 score combining transition sharpness with how much of the
+//     AA ramp is backed by in-range (unsaturated) field samples. A field whose
+//     relevant texels are clamped loses gradient information and scores lower.
+export function measureEdgeProfile(tile, { rangeTexels = tile.rangeTexels, texelsPerEm = tile.texelsPerEm, sizePx = texelsPerEm } = {}) {
+  const { width, height, data } = tile;
+  const range = rangeTexels;
+  const tpe = texelsPerEm;
+  // Decode every texel to screen pixels and derive coverage exactly like the
+  // fragment shader: alpha = clamp(dPx + 0.5, 0, 1) for a 1px ramp.
+  let lo = Infinity;
+  let hi = -Infinity;
+  let inRange = 0;
+  let total = 0;
+  let crossing = 0;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const byte = data[y * width + x];
+      const dTexels = decodeDistance(byte, range);
+      const dPx = (dTexels / tpe) * sizePx;
+      total++;
+      if (byte > 0 && byte < 255) inRange++;
+      if (dPx > lo) lo = Math.min(lo, dPx);
+      if (dPx > hi) hi = Math.max(hi, dPx);
+      if (Math.abs(dPx) <= 0.5) crossing++;
+    }
+  }
+  // Effective on-screen edge width: distance between the coverage 0.1 and 0.9
+  // iso-lines is 0.8 screen px under an ideal 1px linear ramp. Measure the
+  // field gradient along the tightest band of texels straddling the edge.
+  let gradSum = 0;
+  let gradN = 0;
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * width + x;
+      const bC = data[i];
+      if (bC <= 2 || bC >= 253) continue;
+      const dC = decodeDistance(bC, range);
+      const dx = (decodeDistance(data[i + 1], range) - decodeDistance(data[i - 1], range)) / 2;
+      const dy = (decodeDistance(data[i + width], range) - decodeDistance(data[i - width], range)) / 2;
+      const gradTexels = Math.hypot(dx, dy);
+      if (gradTexels > 1e-6) { gradSum += gradTexels; gradN++; }
+    }
+  }
+  const meanGradTexels = gradN ? gradSum / gradN : 0;
+  // Screen-space distance traversed per texel at this render size.
+  const pxPerTexel = sizePx / tpe;
+  // Edge width = screen distance over the 0.1->0.9 coverage span (0.8 of ramp).
+  const edgeWidthPx = meanGradTexels > 0 ? (0.8 * pxPerTexel) / meanGradTexels : null;
+  const inRangeRatio = total ? inRange / total : 0;
+  // Ideal 1px ramp scores 1; wider (blurrier) ramps and saturated fields reduce
+  // the score. This is a measured quantity, not a pass/fail flag.
+  const sharpness = edgeWidthPx == null ? 0 : Math.max(0, Math.min(1, 1 / edgeWidthPx));
+  const clarity = Math.round(Math.max(0, Math.min(1, sharpness * (0.25 + 0.75 * inRangeRatio))) * 1000) / 1000;
+  return {
+    edgeWidthPx: edgeWidthPx == null ? null : Math.round(edgeWidthPx * 1000) / 1000,
+    clarity,
+    inRangeRatio: Math.round(inRangeRatio * 1000) / 1000,
+    crossingTexels: crossing,
+    distanceRangePx: [Math.round(lo * 100) / 100, Math.round(hi * 100) / 100],
+  };
+}
+
 export function kernelError(code, message, detail = null) {
   const e = new Error(message);
   e.code = code;

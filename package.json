@@ -7,8 +7,9 @@
   "scripts": {
     "fonts": "node tools/fetch-fonts.mjs",
     "atlas": "node tools/build-atlas.mjs",
+    "dynamic": "node tools/build-dynamic-sources.mjs",
     "report": "node tools/compare-report.mjs",
-    "build": "npm run fonts && npm run atlas && npm run report",
+    "build": "npm run fonts && npm run atlas && npm run dynamic && npm run report",
     "serve": "node tools/serve.mjs",
     "test": "node --test test/*.test.mjs",
     "e2e": "playwright test",

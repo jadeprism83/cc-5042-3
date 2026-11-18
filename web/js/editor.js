@@ -11,7 +11,7 @@
 import { flattenOutline } from '../../shared/geometry.mjs';
 import {
   buildTileInRect, checkTileMargins, decodeDistance, coverageFromPixels, extractIsoPolylines,
-  ENCODE_NEUTRAL,
+  ENCODE_NEUTRAL, measureEdgeProfile,
 } from '../../shared/sdf.mjs';
 
 const $ = (s) => document.querySelector(s);
@@ -25,7 +25,7 @@ export function initEditor({ state, toast, showError }) {
     glyph: $('#glyph-select'), sx: $('#scale-x'), sy: $('#scale-y'), stroke: $('#stroke'),
     sxOut: $('#scale-x-out'), syOut: $('#scale-y-out'), strokeOut: $('#stroke-out'),
     reset: $('#reset-glyph'), commit: $('#commit-glyph'), facts: $('#editor-facts'), errors: $('#editor-errors'),
-    hint: $('#editor-hint'),
+    hint: $('#editor-hint'), source: $('#atlas-source'),
   };
 
   const ed = {
@@ -38,12 +38,23 @@ export function initEditor({ state, toast, showError }) {
     drag: null,
     preview: null,        // {tile, contours, ms}
     dirty: false,
+    source: 'fixed',      // 'fixed' build atlas | 'dynamic' bounded runtime cache
   };
-  state.editor = { redraw, get ed() { return ed; }, commit };
+  state.editor = { redraw, refresh, get ed() { return ed; }, commit };
+
+  // Refresh the glyph list when re-entering the tab: dynamic slots may have
+  // been generated or recycled since the editor was last shown.
+  function refresh() {
+    if (ed.source === 'dynamic') {
+      buildDynamicGlyphList();
+      runKernel('refresh');
+    }
+  }
 
   let outlines = state.outlines || null;
 
   function buildGlyphList() {
+    if (ed.source === 'dynamic') return buildDynamicGlyphList();
     const face = ed.faceId;
     const faceOutlines = outlines.faces[face] || {};
     const manifest = state.manifests.byId.get(face);
@@ -70,6 +81,7 @@ export function initEditor({ state, toast, showError }) {
   }
 
   function currentGlyphs() {
+    if (ed.source === 'dynamic') return currentDynamicGlyph();
     const meta = ed.glyphs[ed.index];
     if (!meta) return null;
     const entry = outlines.faces[ed.faceId][meta.cp];
@@ -78,7 +90,51 @@ export function initEditor({ state, toast, showError }) {
     if (!entry._contours) {
       entry._contours = flattenOutline(entry.cmds.map((c) => ({ command: c.c, args: c.a })), 0.0015);
     }
-    return { meta, entry };
+    return { meta, entry, dynamic: false };
+  }
+
+  // ---- dynamic-atlas source ---------------------------------------------
+  // The dynamic editor only edits glyphs already resident in the bounded
+  // runtime cache: there is no GPU tile to write back for a glyph that has not
+  // been generated. The list is rebuilt from live slots every time the tab is
+  // entered or the source switch flips, so an evicted glyph simply disappears.
+  function dynSys() { return state.dynamic && !state.dynamicDestroyed ? state.dynamic : null; }
+
+  function buildDynamicGlyphList() {
+    const s = dynSys();
+    if (!s) { ed.glyphs = []; ui.glyph.innerHTML = '<option value="">动态场景已销毁</option>'; ed.index = 0; return; }
+    const list = [];
+    for (const slot of s.cache.slots.values()) {
+      if (slot.state !== 'resident' || !slot.tile) continue;
+      if (!s.provider.hasGlyph(slot.faceId, slot.cp)) continue;
+      list.push({ cp: slot.cp, faceId: slot.faceId, slotIndex: slot.index, epoch: slot.epoch });
+    }
+    list.sort((a, b) => a.slotIndex - b.slotIndex);
+    ed.glyphs = list;
+    ui.glyph.innerHTML = list.length
+      ? list.map((g, i) => {
+        const ch = String.fromCodePoint(g.cp);
+        return `<option value="${i}">${ch}  (U+${g.cp.toString(16).toUpperCase()} · #${g.slotIndex} e${g.epoch})</option>`;
+      }).join('')
+      : '<option value="">动态图集暂无驻留字形 — 先在导览页生成</option>';
+    ed.index = 0;
+    ui.glyph.value = '0';
+  }
+
+  function currentDynamicGlyph() {
+    const s = dynSys();
+    const meta = ed.glyphs[ed.index];
+    if (!s || !meta) return null;
+    // Re-validate against the live cache: a slot recycled to another character
+    // must never be edited through a stale list entry.
+    const slot = s.cache.slots.get(meta.slotIndex);
+    if (!slot || slot.epoch !== meta.epoch || slot.cp !== meta.cp || slot.faceId !== meta.faceId) return null;
+    const src = s.provider.faces[meta.faceId]?.[meta.cp];
+    if (!src) return null;
+    if (!src._contours) {
+      src._contours = flattenOutline(src.cmds.map((c) => ({ command: c.c, args: c.a })), 0.0015);
+    }
+    return { meta, entry: src, slot, dynamic: true };
   }
 
   function transformedContours(base) {
@@ -86,32 +142,57 @@ export function initEditor({ state, toast, showError }) {
     return base.map((c) => ({ points: c.points.map(([x, y]) => [x * sx, y * sy]), closed: true }));
   }
 
+  // Resolve the fixed tile geometry and kernel settings for the current glyph.
+  // In fixed mode these come from the published manifest; in dynamic mode the
+  // tile was sized by buildGlyphTile at generation time and its rect is carried
+  // on the resident slot. Either way the editor may only repaint inside that
+  // rect, never move or grow it.
+  function tileContext(cur) {
+    if (cur.dynamic) {
+      const s = dynSys();
+      const tile = cur.slot.tile;
+      return {
+        settings: s.provider.settings,
+        tileEm: tile.tileEm,
+        width: tile.width,
+        height: tile.height,
+        glyph: { cp: cur.meta.cp, x: 0, y: 0, w: tile.width, h: tile.height,
+          left: tile.tileEm.left, top: tile.tileEm.top, tileEmW: tile.tileEm.width, tileEmH: tile.tileEm.height },
+      };
+    }
+    const manifest = state.manifests.byId.get(ed.faceId);
+    const g = manifest.glyphs[cur.meta.cp];
+    return {
+      settings: manifest.settings, manifest,
+      tileEm: { left: g.left, top: g.top, width: g.tileEmW, height: g.tileEmH },
+      width: g.w, height: g.h, glyph: g,
+    };
+  }
+
   // ---- kernel call ----
   function runKernel(reason) {
     const cur = currentGlyphs();
     if (!cur) { ed.preview = null; return null; }
-    const manifest = state.manifests.byId.get(ed.faceId);
-    const g = manifest.glyphs[cur.meta.cp];
+    const ctx = tileContext(cur);
+    const { settings, tileEm } = ctx;
     const contours = transformedContours(cur.entry._contours);
     const t0 = performance.now();
     try {
       // The tile rect is fixed to the published one: the editor may not move a
       // glyph's tile, only change its contents. So we build over that rect and
       // check margins against it.
-      const tileEm = { left: g.left, top: g.top, width: g.tileEmW, height: g.tileEmH };
-      const width = g.w, height = g.h;
       const bias = ed.strokeEm;
       // Margin check first: the transformed ink (plus stroke) must stay inside
       // the fixed tile with a saturated border.
-      const margins = checkTileMargins(contours, tileEm, manifest.settings.texelsPerEm, manifest.settings.rangeTexels, Math.abs(bias));
+      const margins = checkTileMargins(contours, tileEm, settings.texelsPerEm, settings.rangeTexels, Math.abs(bias));
       const tile = buildTileInRect(contours, {
-        left: tileEm.left, top: tileEm.top, width, height,
-        texelsPerEm: manifest.settings.texelsPerEm,
-        rangeTexels: manifest.settings.rangeTexels,
+        left: tileEm.left, top: tileEm.top, width: ctx.width, height: ctx.height,
+        texelsPerEm: settings.texelsPerEm,
+        rangeTexels: settings.rangeTexels,
         bias,
       });
       const ms = performance.now() - t0;
-      ed.preview = { tile, contours, ms, margins, glyph: g, manifest };
+      ed.preview = { tile, contours, ms, margins, glyph: ctx.glyph, settings, manifest: ctx.manifest || null, dynamic: cur.dynamic, slot: cur.slot || null };
       setErrors([]);
       ed.dirty = true;
       return ed.preview;
@@ -147,9 +228,13 @@ export function initEditor({ state, toast, showError }) {
     ctx.clearRect(0, 0, rect.width, rect.height);
 
     const cur = currentGlyphs();
-    if (!cur) return;
-    const manifest = state.manifests.byId.get(ed.faceId);
-    const g = manifest.glyphs[cur.meta.cp];
+    if (!cur) {
+      if (ed.source === 'dynamic') buildDynamicGlyphList();
+      return;
+    }
+    const tctx = tileContext(cur);
+    const { settings } = tctx;
+    const g = tctx.glyph;
     const contours = transformedContours(cur.entry._contours);
     const preview = ed.preview;
 
@@ -176,7 +261,7 @@ export function initEditor({ state, toast, showError }) {
     ctx.lineWidth = 1;
     ctx.strokeRect(tileLeftPx, tileTopPx, g.tileEmW * zoom, g.tileEmH * zoom);
     // pad band (saturated margin)
-    const padEm = manifest.settings.padTexels / manifest.settings.texelsPerEm;
+    const padEm = settings.padTexels / settings.texelsPerEm;
     ctx.strokeStyle = '#2a2f36';
     ctx.setLineDash([4, 4]);
     ctx.strokeRect(tileLeftPx + padEm * zoom, tileTopPx + padEm * zoom, (g.tileEmW - padEm * 2) * zoom, (g.tileEmH - padEm * 2) * zoom);
@@ -245,12 +330,14 @@ export function initEditor({ state, toast, showError }) {
 
     // Result area: the actual distance field, thresholded, plus iso-contour of
     // the stroke offset.
-    drawResult(g, preview, manifest);
-    updateFacts(g, preview, manifest);
-    ui.hint.textContent = `拖拽控制点移动；滚轮缩放；右键拖拽平移。图块固定，改动只重算场内像素。`;
+    drawResult(g, preview, settings);
+    updateFacts(g, preview, settings, cur);
+    ui.hint.textContent = cur.dynamic
+      ? '动态图集驻留字形：拖拽控制点移动；改动重算距离场并回写到同一槽位（代次校验）。'
+      : `拖拽控制点移动；滚轮缩放；右键拖拽平移。图块固定，改动只重算场内像素。`;
   }
 
-  function drawResult(g, preview, manifest) {
+  function drawResult(g, preview, settings) {
     const rect = resultCanvas.getBoundingClientRect();
     if (rect.width < 10) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -278,7 +365,7 @@ export function initEditor({ state, toast, showError }) {
     }
     // Preview at a fixed size derived from the result area (e.g. 72 px).
     const pxSize = Math.min(rect.height - 30, 96);
-    const scale = pxSize / manifest.settings.texelsPerEm;
+    const scale = pxSize / settings.texelsPerEm;
     const W = tile.width, H = tile.height;
     const off = document.createElement('canvas');
     off.width = W; off.height = H;
@@ -286,7 +373,7 @@ export function initEditor({ state, toast, showError }) {
     const img = octx.createImageData(W, H);
     for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
       const byte = tile.data[py * W + px];
-      const dPx = (decodeDistance(byte, manifest.settings.rangeTexels) / manifest.settings.texelsPerEm) * pxSize;
+      const dPx = (decodeDistance(byte, settings.rangeTexels) / settings.texelsPerEm) * pxSize;
       const a = Math.round(coverageFromPixels(dPx, 1) * 255);
       const o = (py * W + px) * 4;
       img.data[o] = 239; img.data[o + 1] = 231; img.data[o + 2] = 215; img.data[o + 3] = a;
@@ -317,14 +404,34 @@ export function initEditor({ state, toast, showError }) {
     }
   }
 
-  function updateFacts(g, preview, manifest) {
+  function updateFacts(g, preview, settings, cur) {
+    let edgeRows = ['字边宽度', '—', '清晰度', '—'];
+    if (preview) {
+      // Measured at a representative on-screen size (64px) so scaling/stroke
+      // edits produce comparable numbers; the decode is the shader's formula.
+      const profile = measureEdgeProfile(preview.tile, {
+        rangeTexels: settings.rangeTexels,
+        texelsPerEm: settings.texelsPerEm,
+        sizePx: 64,
+      });
+      edgeRows = [
+        '字边宽度（实测）', profile.edgeWidthPx == null ? '—' : `${profile.edgeWidthPx} px`,
+        '清晰度（实测）', profile.clarity.toFixed(3),
+      ];
+    }
+    const sourceRow = cur?.dynamic
+      ? ['图集来源', `动态槽位 #${cur.slot.index} · 代次 ${cur.slot.epoch}`]
+      : ['图集来源', '固定构建图集'];
     const rows = [
       ['字形', `${String.fromCodePoint(g.cp)} U+${g.cp.toString(16).toUpperCase()}`],
-      ['读数', `${manifest.settings.texelsPerEm} texel/em · ±${manifest.settings.rangeTexels}`],
+      sourceRow,
+      ['读数', `${settings.texelsPerEm} texel/em · ±${settings.rangeTexels}`],
       ['缩放', `${ed.scale.x.toFixed(2)} × ${ed.scale.y.toFixed(2)}`],
       ['描边', `${ed.strokeEm >= 0 ? '+' : ''}${ed.strokeEm.toFixed(3)} em`],
       ['内核耗时', preview ? `${preview.ms.toFixed(1)} ms` : '—'],
       ['描边后边距', preview ? `${Math.min(preview.margins.left, preview.margins.right, preview.margins.top, preview.margins.bottom).toFixed(3)} em` : '—'],
+      [edgeRows[0], edgeRows[1]],
+      [edgeRows[2], edgeRows[3]],
       ['状态', !preview ? '内核拒绝，未提交' : ed.dirty ? '已改，未提交' : '与图集一致'],
     ];
     ui.facts.innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
@@ -446,30 +553,78 @@ export function initEditor({ state, toast, showError }) {
   });
   ui.commit.addEventListener('click', () => commit());
 
+  ui.source.addEventListener('change', () => {
+    ed.source = ui.source.value;
+    ed.scale = { x: 1, y: 1 };
+    ed.strokeEm = 0;
+    ui.sx.value = '1'; ui.sy.value = '1'; ui.stroke.value = '0';
+    syncControls();
+    setErrors([]);
+    buildGlyphList();
+    runKernel('source');
+    redraw();
+  });
+
   function commit() {
     const preview = ed.preview || runKernel('commit');
     if (!preview) { toast('提交被拒绝：请先修正图块边距', 'error'); return; }
-    const { tile, glyph, manifest } = preview;
-    // In-place upload of the tile's pixel rect. The tile's position did not
-    // change, so the atlas and every existing instanced draw stays valid.
+    const { tile, glyph } = preview;
     try {
-      state.renderer.updateAtlasRect(manifest.face, glyph.x, glyph.y, tile.width, tile.height, tile.data);
-      // Keep the CPU-side payload in sync so the inspector and glyph copies agree.
-      const px = state.pixels.get(manifest.face);
-      for (let y = 0; y < tile.height; y++) {
-        px.data.set(tile.data.subarray(y * tile.width, (y + 1) * tile.width), (glyph.y + y) * px.width + glyph.x);
+      if (preview.dynamic) {
+        commitDynamic(preview);
+      } else {
+        commitFixed(preview);
       }
-      // Update the manifest so re-layout uses the same tile origin (unchanged)
-      // and the strokeEm used by any future report.
-      glyph.strokeEm = ed.strokeEm;
       ed.dirty = false;
-      toast(`已提交 ${String.fromCodePoint(glyph.cp)} 到 ${manifest.faceLabel} 图集（${tile.width}×${tile.height} texel）`);
-      updateFacts(glyph, preview, manifest);
+      toast(`已提交 ${String.fromCodePoint(glyph.cp)}（${tile.width}×${tile.height} texel）`);
+      updateFacts(glyph, preview, preview.settings, currentGlyphs());
       if (state.view === 'field') state.field?.redraw();
     } catch (err) {
       setErrors([{ code: err.code || 'UPLOAD', message: err.message, detail: err.detail }]);
       showError(err);
     }
+  }
+
+  function commitFixed(preview) {
+    const { tile, glyph, manifest } = preview;
+    // In-place upload of the tile's pixel rect. The tile's position did not
+    // change, so the atlas and every existing instanced draw stays valid.
+    state.renderer.updateAtlasRect(manifest.face, glyph.x, glyph.y, tile.width, tile.height, tile.data);
+    // Keep the CPU-side payload in sync so the inspector and glyph copies agree.
+    const px = state.pixels.get(manifest.face);
+    for (let y = 0; y < tile.height; y++) {
+      px.data.set(tile.data.subarray(y * tile.width, (y + 1) * tile.width), (glyph.y + y) * px.width + glyph.x);
+    }
+    // Update the manifest so re-layout uses the same tile origin (unchanged)
+    // and the strokeEm used by any future report.
+    glyph.strokeEm = ed.strokeEm;
+  }
+
+  function commitDynamic(preview) {
+    const s = dynSys();
+    const cur = currentGlyphs();
+    if (!s) throw Object.assign(new Error('动态场景已销毁，无法回写'), { code: 'CACHE_DESTROYED' });
+    if (!cur || !cur.slot || cur.slot.epoch !== preview.slot.epoch) {
+      throw Object.assign(new Error('槽位代次已变化：该字形已被回收或重新分配，请重新选择'), { code: 'STALE_SLOT' });
+    }
+    const slot = cur.slot;
+    const { tile } = preview;
+    // The cell rect is fixed; an oversize tile is a kernel/config error the GL
+    // bridge refuses rather than clipping into a neighbour.
+    if (tile.width > s.glAtlas.cellW || tile.height > s.glAtlas.cellH) {
+      throw Object.assign(new Error('动态图块超过槽位尺寸'), {
+        code: 'TILE_OVERFLOW',
+        detail: { tile: [tile.width, tile.height], cell: [s.glAtlas.cellW, s.glAtlas.cellH] },
+      });
+    }
+    // Preserve the slot's origin offsets and advance: the edit changed field
+    // contents only, not the layout geometry. Then overwrite the bounded texture
+    // cell in place and refresh the CPU mirror the status view reads.
+    const ox = slot.tile.ox, oy = slot.tile.oy;
+    s.glAtlas.uploadTile({ index: slot.index }, tile);
+    tile.ox = ox; tile.oy = oy;
+    slot.tile = tile;
+    slot.strokeEm = ed.strokeEm;
   }
 
   // expose for tests
