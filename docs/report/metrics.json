@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generatedAt": "2026-11-18T04:48:47.271Z",
+ "generatedAt": "2026-11-18T13:59:29.489Z",
  "sizes": [
   12,
   16,
@@ -28,7 +28,7 @@
     "gutter": 2,
     "padding": 1
    },
-   "buildMs": 222
+   "buildMs": 179
   },
   {
    "id": "sans-book",
@@ -48,7 +48,7 @@
     "gutter": 2,
     "padding": 1
    },
-   "buildMs": 176
+   "buildMs": 151
   },
   {
    "id": "sans-bold",
@@ -68,7 +68,7 @@
     "gutter": 2,
     "padding": 1
    },
-   "buildMs": 147
+   "buildMs": 527
   },
   {
    "id": "cjk-regular",
@@ -88,7 +88,7 @@
     "gutter": 2,
     "padding": 1
    },
-   "buildMs": 478
+   "buildMs": 506
   }
  ],
  "totals": {

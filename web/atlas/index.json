@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-11-18T04:48:45.878Z",
+  "generatedAt": "2026-11-18T13:59:27.719Z",
   "generator": "tools/build-atlas.mjs",
   "conventions": {
     "distance": "R8: 128 = edge, 255 = +rangeTexels inside, 0 = -rangeTexels outside",
@@ -36,7 +36,7 @@
         "padding": 1
       },
       "missing": [],
-      "buildMs": 222
+      "buildMs": 179
     },
     {
       "id": "sans-book",
@@ -64,7 +64,7 @@
         "padding": 1
       },
       "missing": [],
-      "buildMs": 176
+      "buildMs": 151
     },
     {
       "id": "sans-bold",
@@ -92,7 +92,7 @@
         "padding": 1
       },
       "missing": [],
-      "buildMs": 147
+      "buildMs": 527
     },
     {
       "id": "cjk-regular",
@@ -120,7 +120,7 @@
         "padding": 1
       },
       "missing": [],
-      "buildMs": 478
+      "buildMs": 506
     }
   ],
   "tourStrings": {
