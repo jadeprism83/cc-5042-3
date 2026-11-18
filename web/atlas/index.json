@@ -1,0 +1,175 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-11-18T04:48:45.878Z",
+  "generator": "tools/build-atlas.mjs",
+  "conventions": {
+    "distance": "R8: 128 = edge, 255 = +rangeTexels inside, 0 = -rangeTexels outside",
+    "placement": "tile rect includes pad; advance is a separate font metric and is never used as tracking",
+    "yAxis": "glyph space is y-up; tile y=0 is the top of the tile",
+    "pooling": "bilinear; border texels saturate so adjacent tiles cannot bleed",
+    "ligatures": "the runtime lays out code points + pair kerning; no ligature substitution"
+  },
+  "faces": [
+    {
+      "id": "sans-thin",
+      "label": "DejaVu Sans ExtraLight",
+      "family": "pavilion-thin",
+      "weight": 200,
+      "json": "sans-thin.json",
+      "png": "sans-thin.png",
+      "r8": "sans-thin.r8",
+      "glyphCount": 107,
+      "atlas": {
+        "width": 4090,
+        "height": 185,
+        "pixels": 756650,
+        "pngBytes": 97103,
+        "sha256": "f02165cdfd519cff13ffbfffaf7bc46e6dbf64b59ce53cebf4b019a9ca572892"
+      },
+      "settings": {
+        "texelsPerEm": 64,
+        "rangeTexels": 10,
+        "padTexels": 16,
+        "maxWidth": 4096,
+        "maxHeight": 4096,
+        "gutter": 2,
+        "padding": 1
+      },
+      "missing": [],
+      "buildMs": 222
+    },
+    {
+      "id": "sans-book",
+      "label": "DejaVu Sans Book",
+      "family": "pavilion-book",
+      "weight": 400,
+      "json": "sans-book.json",
+      "png": "sans-book.png",
+      "r8": "sans-book.r8",
+      "glyphCount": 107,
+      "atlas": {
+        "width": 4062,
+        "height": 185,
+        "pixels": 751470,
+        "pngBytes": 101643,
+        "sha256": "2a5c9037b5dd42c913e36079e70a3220240df2ea2d86fdfffcc2514c1ba586fc"
+      },
+      "settings": {
+        "texelsPerEm": 64,
+        "rangeTexels": 10,
+        "padTexels": 16,
+        "maxWidth": 4096,
+        "maxHeight": 4096,
+        "gutter": 2,
+        "padding": 1
+      },
+      "missing": [],
+      "buildMs": 176
+    },
+    {
+      "id": "sans-bold",
+      "label": "DejaVu Sans Bold",
+      "family": "pavilion-bold",
+      "weight": 700,
+      "json": "sans-bold.json",
+      "png": "sans-bold.png",
+      "r8": "sans-bold.r8",
+      "glyphCount": 107,
+      "atlas": {
+        "width": 4088,
+        "height": 185,
+        "pixels": 756280,
+        "pngBytes": 107067,
+        "sha256": "a6907247cd3f92b91f3d1e40e54f71d65e72bd3f85e08285f76a14f1ec5e269d"
+      },
+      "settings": {
+        "texelsPerEm": 64,
+        "rangeTexels": 10,
+        "padTexels": 16,
+        "maxWidth": 4096,
+        "maxHeight": 4096,
+        "gutter": 2,
+        "padding": 1
+      },
+      "missing": [],
+      "buildMs": 147
+    },
+    {
+      "id": "cjk-regular",
+      "label": "Noto Sans SC",
+      "family": "pavilion-cjk",
+      "weight": 400,
+      "json": "cjk-regular.json",
+      "png": "cjk-regular.png",
+      "r8": "cjk-regular.r8",
+      "glyphCount": 164,
+      "atlas": {
+        "width": 4088,
+        "height": 381,
+        "pixels": 1557528,
+        "pngBytes": 284331,
+        "sha256": "8c4b4601772a4f013e93ec22f651a4b63f268079c0fb9d42f349ab0931867743"
+      },
+      "settings": {
+        "texelsPerEm": 64,
+        "rangeTexels": 10,
+        "padTexels": 16,
+        "maxWidth": 4096,
+        "maxHeight": 4096,
+        "gutter": 2,
+        "padding": 1
+      },
+      "missing": [],
+      "buildMs": 478
+    }
+  ],
+  "tourStrings": {
+    "meta": {
+      "title": "山水之间",
+      "titleEn": "Between Mountains and Water",
+      "subtitle": "第三展厅 · 园林与时间",
+      "hall": "第三展厅",
+      "issue": "03",
+      "lead": "第三展厅以借景为线索，把山、水、器物与时间放进同一段步行路线。"
+    },
+    "sections": [
+      {
+        "no": "01",
+        "heading": "借景",
+        "headingEn": "Borrowed Scenery",
+        "body": "园林从不把墙当作终点。窗洞、廊柱与水面把远处的山、邻家的树借入园中，让有限的空间拥有更远的边界。"
+      },
+      {
+        "no": "02",
+        "heading": "器物",
+        "headingEn": "Objects",
+        "body": "案上的砚、瓶中的一枝、墙上的一幅手稿，都是时间留下的痕迹。请与展品保持距离，不要触摸展柜。"
+      },
+      {
+        "no": "03",
+        "heading": "时间",
+        "headingEn": "Time",
+        "body": "开放时间：周二至周日 09:30–17:30；周一闭馆，法定节假日除外。最后入场时间为 16:45。"
+      }
+    ],
+    "notices": [
+      "参观须知：展厅内请保持安静，请勿触摸展品；拍照请关闭闪光灯。",
+      "服务台提供免费讲解预约、轮椅租借与寄存服务。",
+      "出口位于展厅东侧，洗手间在二层，电梯近 2 号门。"
+    ],
+    "captions": [
+      "第一单元 · 借景 / Borrowed Scenery",
+      "第二单元 · 器物 / Objects",
+      "第三单元 · 时间 / Time"
+    ],
+    "punctuation": "「山水之间」，……；：、。！？（）《》·—–“”‘’",
+    "latinSample": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "latinLower": "abcdefghijklmnopqrstuvwxyz",
+    "numerals": "0123456789",
+    "glyphSample": "Aa Ww Qq Rg &@%",
+    "glyphSampleCjk": "永展山园间馆",
+    "hero": "展",
+    "map": "平面图 · Floor Plan",
+    "arrows": "← ↑ → ↓"
+  }
+}

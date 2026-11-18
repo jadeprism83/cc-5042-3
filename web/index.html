@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>山水之间 · 展馆导览文字渲染器</title>
+<link rel="stylesheet" href="./css/app.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>山水之间</h1>
+      <p>展馆导览文字渲染器 · SDF 字形图集</p>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist" aria-label="视图">
+    <button role="tab" data-view="tour" aria-selected="true">导览</button>
+    <button role="tab" data-view="field">距离场</button>
+    <button role="tab" data-view="editor">字形编辑</button>
+    <button role="tab" data-view="audit">误差与图集</button>
+  </nav>
+  <div class="status" id="status" data-state="loading">
+    <span class="dot"></span><span id="status-text">正在加载字形图集…</span>
+  </div>
+</header>
+
+<main>
+  <section class="view" id="view-tour" data-view="tour">
+    <canvas id="tour-canvas" aria-label="由距离场字形图集绘制的展馆导览文字"></canvas>
+    <div class="tour-controls">
+      <label>字号 <input type="range" id="size" min="10" max="220" value="28" /><output id="size-out">28 px</output></label>
+      <label>字重
+        <select id="weight">
+          <option value="sans-thin">细体 ExtraLight</option>
+          <option value="sans-book" selected>正文 Book</option>
+          <option value="sans-bold">粗体 Bold</option>
+        </select>
+      </label>
+      <label>字距 <input type="range" id="tracking" min="-40" max="120" value="0" /><output id="tracking-out">0 /1000 em</output></label>
+      <label class="inline"><input type="checkbox" id="guides" /> 显示基线 / 图块边框</label>
+      <label class="inline"><input type="checkbox" id="debugfield" /> 显示距离场灰度</label>
+    </div>
+  </section>
+
+  <section class="view" id="view-field" data-view="field" hidden>
+    <div class="field-grid">
+      <div class="field-main">
+        <canvas id="field-canvas" aria-label="距离场检查器"></canvas>
+      </div>
+      <aside class="field-side">
+        <h2>图集检查</h2>
+        <label>字体
+          <select id="field-face">
+            <option value="sans-thin">细体</option>
+            <option value="sans-book" selected>正文</option>
+            <option value="sans-bold">粗体</option>
+            <option value="cjk-regular">中文</option>
+          </select>
+        </label>
+        <label>显示
+          <select id="field-mode">
+            <option value="0">原始 R8 数值</option>
+            <option value="1" selected>有符号距离（红线外 / 青线内）</option>
+            <option value="2">阈值化字形</option>
+          </select>
+        </label>
+        <label>放大 <input type="range" id="field-zoom" min="1" max="8" step="0.25" value="2" /><output id="field-zoom-out">2.0×</output></label>
+        <label>预览字号 <input type="range" id="field-px" min="8" max="256" value="64" /><output id="field-px-out">64 px</output></label>
+        <dl class="facts" id="field-facts"></dl>
+        <p class="note">
+          图块四周有 <b id="fact-pad">16</b> texel 空白边，大于距离编码范围
+          <b id="fact-range">10</b> texel，因此边缘在到达邻字前已饱和。下方一栏是同一图集按当前
+          字号与阈值的重建，可与上方距离场逐像素对照。
+        </p>
+        <div class="field-strip"><canvas id="field-strip" aria-label="当前字号下的字形重建"></canvas></div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="view" id="view-editor" data-view="editor" hidden>
+    <div class="editor-grid">
+      <div class="editor-canvas-wrap">
+        <canvas id="editor-canvas" aria-label="矢量字形编辑窗口"></canvas>
+        <div class="editor-hint" id="editor-hint">拖拽控制点移动；滚轮缩放；右键拖拽平移。</div>
+      </div>
+      <aside class="editor-side">
+        <h2>字形图集内核</h2>
+        <p class="note small">编辑由内核驱动：每次改动都会重算该字的距离场，并把结果回写到图集与结果区。失败会直接显示在这里。</p>
+        <label>字形
+          <select id="glyph-select"></select>
+        </label>
+        <div class="row">
+          <label>缩放 X <input type="range" id="scale-x" min="0.4" max="1.8" step="0.01" value="1" /><output id="scale-x-out">1.00</output></label>
+          <label>缩放 Y <input type="range" id="scale-y" min="0.4" max="1.8" step="0.01" value="1" /><output id="scale-y-out">1.00</output></label>
+        </div>
+        <label>描边粗细 <input type="range" id="stroke" min="-0.08" max="0.12" step="0.002" value="0" /><output id="stroke-out">0.000 em</output></label>
+        <div class="row">
+          <button id="reset-glyph" class="ghost">还原字形</button>
+          <button id="commit-glyph">提交到图集</button>
+        </div>
+        <div class="editor-result">
+          <h3>结果区</h3>
+          <div class="editor-result-frame">
+            <canvas id="editor-result" aria-label="编辑后的距离场字边"></canvas>
+            <p class="editor-result-empty" id="editor-result-empty" hidden>无有效结果 — 见下方内核错误</p>
+          </div>
+          <dl class="facts" id="editor-facts"></dl>
+          <div class="errors" id="editor-errors" role="alert" hidden></div>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <section class="view" id="view-audit" data-view="audit" hidden>
+    <div class="audit-wrap">
+      <div class="audit-head">
+        <h2>误差、采样与图集尺寸</h2>
+        <p>数值来自 <code>tools/compare-report.mjs</code> 的输出。页面只读取 <code>docs/report/metrics.json</code>，不在此处重新计算，以免出现两套口径。</p>
+      </div>
+      <div id="audit-body">正在读取…</div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
